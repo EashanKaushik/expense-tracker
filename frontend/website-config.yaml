@@ -1,0 +1,245 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Amazon Scribe Template
+
+Resources:
+  WebsiteBucket:
+    Type: "AWS::S3::Bucket"
+  
+  # Restricts access to S3 bucket, only allowing read access via CloudFront
+  WebsiteBucketPolicy:
+      Type: "AWS::S3::BucketPolicy"
+      Properties:
+          Bucket: !Ref WebsiteBucket
+          PolicyDocument: 
+              Version: "2008-10-17"
+              Id: "PolicyForCloudFrontPrivateContent"
+              Statement: 
+                - 
+                  Sid: "AllowCloudFrontServicePrincipal"
+                  Effect: "Allow"
+                  Principal: 
+                      Service: "cloudfront.amazonaws.com"
+                  Action: "s3:GetObject"
+                  Resource: !Sub "arn:aws:s3:::${WebsiteBucket}/*"
+                  Condition: 
+                      StringEquals: 
+                          "AWS:SourceArn": !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${Distribution}"
+  
+  CloudFrontWAFWebACL:
+      Type: "AWS::WAFv2::WebACL"
+      Properties:
+          Description: Web ACL to protect CloudFront front end website for Amazon Scribe
+          DefaultAction: 
+              Allow: {}
+          VisibilityConfig: 
+              SampledRequestsEnabled: true
+              CloudWatchMetricsEnabled: true
+              MetricName: "CloudFrontWAFWebACL"
+          Scope: "CLOUDFRONT"
+          Rules: 
+            - Name: "AWS-AWSManagedRulesAmazonIpReputationList"
+              Priority: 0
+              OverrideAction: 
+                  None: {}
+              Statement: 
+                  ManagedRuleGroupStatement: 
+                      VendorName: "AWS"
+                      Name: "AWSManagedRulesAmazonIpReputationList"
+              VisibilityConfig: 
+                  SampledRequestsEnabled: true
+                  CloudWatchMetricsEnabled: true
+                  MetricName: "AWS-AWSManagedRulesAmazonIpReputationList"
+            - Name: "AWS-AWSManagedRulesCommonRuleSet"
+              Priority: 1
+              OverrideAction: 
+                  None: {}
+              Statement: 
+                  ManagedRuleGroupStatement: 
+                      VendorName: "AWS"
+                      Name: "AWSManagedRulesCommonRuleSet"
+              VisibilityConfig: 
+                  SampledRequestsEnabled: true
+                  CloudWatchMetricsEnabled: true
+                  MetricName: "AWS-AWSManagedRulesCommonRuleSet"
+            - Name: "AWS-AWSManagedRulesKnownBadInputsRuleSet"
+              Priority: 2
+              OverrideAction: 
+                  None: {}
+              Statement: 
+                  ManagedRuleGroupStatement: 
+                      VendorName: "AWS"
+                      Name: "AWSManagedRulesKnownBadInputsRuleSet"
+              VisibilityConfig: 
+                  SampledRequestsEnabled: true
+                  CloudWatchMetricsEnabled: true
+                  MetricName: "AWS-AWSManagedRulesKnownBadInputsRuleSet"
+  
+  OriginAccessControl:
+      Type: "AWS::CloudFront::OriginAccessControl"
+      Properties:
+          OriginAccessControlConfig: 
+              Name: !Join [ '', ['frontendwebaccess', !Select [0, !Split [-, !Select [2, !Split [/, !Ref AWS::StackId ]]]]]]
+              OriginAccessControlOriginType: "s3"
+              SigningBehavior: "always"
+              SigningProtocol: "sigv4"
+
+  Distribution:
+      Type: "AWS::CloudFront::Distribution"
+      Properties:
+          DistributionConfig: 
+              Origins: 
+                - 
+                  ConnectionAttempts: 3
+                  ConnectionTimeout: 10
+                  DomainName: !Sub "${WebsiteBucket}.s3.${AWS::Region}.amazonaws.com"
+                  Id: !Sub "${WebsiteBucket}.s3.${AWS::Region}.amazonaws.com"
+                  S3OriginConfig: 
+                      OriginAccessIdentity: ""
+                  OriginAccessControlId: !GetAtt OriginAccessControl.Id
+              DefaultCacheBehavior: 
+                  AllowedMethods: 
+                    - "HEAD"
+                    - "DELETE"
+                    - "POST"
+                    - "GET"
+                    - "OPTIONS"
+                    - "PUT"
+                    - "PATCH"
+                  CachedMethods: 
+                    - "HEAD"
+                    - "GET"
+                  Compress: true
+                  CachePolicyId: "658327ea-f89d-4fab-a63d-7e88639e58f6"
+                  SmoothStreaming: false
+                  TargetOriginId: !Sub "${WebsiteBucket}.s3.${AWS::Region}.amazonaws.com"
+                  ViewerProtocolPolicy: "allow-all"
+              PriceClass: "PriceClass_All"
+              Enabled: true
+              ViewerCertificate: 
+                  CloudFrontDefaultCertificate: true
+              HttpVersion: "http2"
+              DefaultRootObject: "index.html"
+              IPV6Enabled: true
+              WebACLId: !GetAtt CloudFrontWAFWebACL.Arn
+  
+  CodeBuildRole:
+      Type: 'AWS::IAM::Role'
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: 'Allow'
+              Principal:
+                Service:
+                  - 'codebuild.amazonaws.com'
+              Action:
+                - 'sts:AssumeRole'
+        ManagedPolicyArns:
+          - 'arn:aws:iam::aws:policy/CloudWatchFullAccess'
+        Policies:
+          - PolicyName: 'ECRPolicy'
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: 'Allow'
+                  Action:
+                    - [	"s3:PutObject", "s3:PutObjectAcl"]
+                  Resource:
+                    - !GetAtt WebsiteBucket.Arn
+
+  CodeBuildProject:
+      Type: AWS::CodeBuild::Project
+      Properties:
+        Source:
+          Type: GITHUB
+          Location: https://github.com/EashanKaushik/expense-tracker.git
+          BuildSpec: 
+            !Sub
+              - |
+                version: 0.2
+                phases:
+                  build:
+                    commands:    
+                      - cd frontend
+                      - npm run build
+                  post_build:
+                    commands:
+                      - aws s3 cp dist/* s3://{WebsiteBucket} –recursive
+              - { WebsiteBucket: !Ref WebsiteBucket }
+        Environment:
+          Type: LINUX_CONTAINER
+          Image: aws/codebuild/standard:2.0
+          ComputeType: BUILD_GENERAL1_SMALL
+        ServiceRole: !GetAtt CodeBuildRole.Arn
+        Artifacts:
+          Type: NO_ARTIFACTS
+  
+  BuildCodeCustomResourceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: "/"
+      ManagedPolicyArns:
+        - !GetAtt LogsPolicy.PolicyArn
+      Policies:
+        - PolicyName: CodeBuildPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - codebuild:StartBuild
+                  - codebuild:BatchGetBuilds
+                Resource:
+                  - '*'
+
+  BuildCodeCustomResourceFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt BuildCodeCustomResourceRole.Arn
+      Timeout: 900
+      Runtime: python3.12
+      Code:
+        ZipFile: !Sub |
+          import boto3
+          from time import sleep
+          import cfnresponse
+
+          def handler(event, context):
+              
+              if event['RequestType'] == 'Create':
+
+                client = boto3.client("codebuild")
+                status = 'STARTING'
+
+                while status != 'SUCCEEDED':
+                  if status in ['STARTING', 'TIMED_OUT', 'FAULT']:
+                    build_id = client.start_build(projectName=event['ResourceProperties']['PROJECT'])['build']['id']
+                    print(build_id)
+                  sleep(30)
+                  status = client.batch_get_builds(ids=[build_id])['builds'][0]['buildStatus']
+                  print(status)
+
+              cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  BuildCodeCustomResource:
+    Type: Custom::BuildCode
+    Properties:
+      ServiceToken: !GetAtt BuildCodeCustomResourceFunction.Arn
+      PROJECT: !Ref CodeBuildProject
+
+
+Outputs:
+
+  Link:
+    Description: "CloudFront Website URL"
+    Value: !GetAtt Distribution.DomainName
