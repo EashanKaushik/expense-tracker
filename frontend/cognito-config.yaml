@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Amazon Scribe Template
+
+Parameters:
+  Email:
+    Description: Address to receive meeting transcripts, summaries, action items, etc.
+    Type: String
+
+Resources:
+  ScribeCognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      AliasAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: true
+          RequireSymbols: true
+      Schema:
+        - AttributeDataType: String
+          Mutable: true
+          Name: email
+          Required: true
+          StringAttributeConstraints:
+            MinLength: "1"
+      UsernameAttributes:
+        - email
+  
+  ScribeWebCognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ScribeCognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+  
+  ScribeUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserAttributes:        
+        - Name: email
+          Value: !Ref Email
+      UserPoolId: !Ref ScribeCognitoUserPool
+    DependsOn: ScribeCognitoUserPool

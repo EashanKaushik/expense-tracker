@@ -2,9 +2,26 @@ import ListCategory from './Components/ListCategory';
 import ProductForm from './Components/ProductForm';
 import SelectCategory from './Components/SelectCategory';
 import FetchData from './Components/FetchData';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {produce} from "immer";
 import { FieldValues } from 'react-hook-form';
+
+import {Amplify} from 'aws-amplify';
+import awsExports from './services/login-client';
+import {withAuthenticator, WithAuthenticatorProps } from '@aws-amplify/ui-react';
+import { Button } from 'react-bootstrap';
+import '@aws-amplify/ui-react/styles.css'
+import {fetchAuthSession}  from '@aws-amplify/auth';
+import apiGatewayClient from './services/apiGateway-client';
+
+Amplify.configure({
+  Auth:{
+    Cognito: {
+      userPoolId: awsExports.USER_POOL_ID,
+      userPoolClientId: awsExports.USER_POOL_CLIENT_ID
+    }
+  }
+})
 
 export type Products = {
   id: string,
@@ -13,7 +30,33 @@ export type Products = {
   category: string,
 }[];
 
-function App() {
+console.log("ehllo")
+
+function App({ signOut, user }: WithAuthenticatorProps) {
+  const [jwtToken, setJwtToken] = useState('');
+    
+  useEffect(() => {
+    async function currentSession() {
+      try {
+        const { accessToken, idToken } = (await fetchAuthSession()).tokens ?? {};
+        if(accessToken?.toString())
+          setJwtToken(idToken?.toString()!);
+      } catch (err) {
+        console.log(err);
+      }
+    }
+
+    currentSession();
+    
+    }, []);
+  
+  console.log("jwtToken")
+  console.log(jwtToken)
+  const authorized = apiGatewayClient(jwtToken)
+  const controller = new AbortController();
+  console.log(authorized.get('', {signal: controller.signal}).then(res => console.log(res)));
+  console.log(jwtToken);
+    
   const [products, setProducts] = useState<Products>([
     {id: "1", product: "water", category: "food", price: 100},
     {id: "2", product: "beef", category: "food", price: 200},
@@ -58,8 +101,11 @@ function App() {
       <ListCategory products={visibleProducts} removeProduct={removeProduct}></ListCategory>
     </div>
     <div className="container"><FetchData/></div>
+    <Button onClick={signOut}>Sign Out: {user?.username}</Button>
     </>
   )
 }
 
-export default App
+export default withAuthenticator(App, {
+  hideSignUp: true
+ });

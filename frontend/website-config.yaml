@@ -5,6 +5,20 @@ Resources:
   WebsiteBucket:
     Type: "AWS::S3::Bucket"
   
+  LogsPolicy:
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Path: /
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: 'Allow'
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource: '*'
+  
   # Restricts access to S3 bucket, only allowing read access via CloudFront
   WebsiteBucketPolicy:
       Type: "AWS::S3::BucketPolicy"
@@ -143,9 +157,10 @@ Resources:
               Statement:
                 - Effect: 'Allow'
                   Action:
-                    - [	"s3:PutObject", "s3:PutObjectAcl"]
+                    - "s3:PutObject"
+                    - "s3:PutObjectAcl"
                   Resource:
-                    - !GetAtt WebsiteBucket.Arn
+                    - !Sub arn:aws:s3:::${WebsiteBucket}/*
 
   CodeBuildProject:
       Type: AWS::CodeBuild::Project
@@ -158,17 +173,21 @@ Resources:
               - |
                 version: 0.2
                 phases:
+                  pre_build:
+                    commands:
+                      - pip3 install awscli --upgrade --user
                   build:
-                    commands:    
+                    commands:
                       - cd frontend
+                      - npm install
                       - npm run build
                   post_build:
                     commands:
-                      - aws s3 cp dist/* s3://{WebsiteBucket} –recursive
+                      - aws s3 cp dist/ s3://${WebsiteBucket} --recursive
               - { WebsiteBucket: !Ref WebsiteBucket }
         Environment:
           Type: LINUX_CONTAINER
-          Image: aws/codebuild/standard:2.0
+          Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
           ComputeType: BUILD_GENERAL1_SMALL
         ServiceRole: !GetAtt CodeBuildRole.Arn
         Artifacts:
