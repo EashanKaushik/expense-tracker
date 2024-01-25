@@ -1,9 +1,54 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: Amazon Scribe Template
+Parameters:
+  Email:
+    Description: Address to receive meeting transcripts, summaries, action items, etc.
+    Type: String
 
 Resources:
   WebsiteBucket:
     Type: "AWS::S3::Bucket"
+  
+  ScribeCognitoUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireUppercase: true
+          RequireSymbols: true
+      Schema:
+        - AttributeDataType: String
+          Mutable: true
+          Name: email
+          Required: true
+          StringAttributeConstraints:
+            MinLength: "1"
+  
+  ScribeWebCognitoUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref ScribeCognitoUserPool
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      PreventUserExistenceErrors: ENABLED
+  
+  ScribeUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserAttributes:        
+        - Name: email
+          Value: !Ref Email
+      UserPoolId: !Ref ScribeCognitoUserPool
+      Username: !Ref Email
+    DependsOn: ScribeCognitoUserPool
   
   LogsPolicy:
     Type: "AWS::IAM::ManagedPolicy"
@@ -179,12 +224,18 @@ Resources:
                   build:
                     commands:
                       - cd frontend
+                      - echo -e "VITE_USER_POOL_ID=${VITE_USER_POOL_ID}\nVITE_USER_POOL_CLIENT_ID=${VITE_USER_POOL_CLIENT_ID}" > .env
+                      - cat .env
                       - npm install
                       - npm run build
                   post_build:
                     commands:
                       - aws s3 cp dist/ s3://${WebsiteBucket} --recursive
-              - { WebsiteBucket: !Ref WebsiteBucket }
+              - { 
+                  WebsiteBucket: !Ref WebsiteBucket,
+                  VITE_USER_POOL_ID: !Ref ScribeCognitoUserPool,
+                  VITE_USER_POOL_CLIENT_ID: !Ref ScribeWebCognitoUserPoolClient
+                }
         Environment:
           Type: LINUX_CONTAINER
           Image: aws/codebuild/amazonlinux2-x86_64-standard:5.0
